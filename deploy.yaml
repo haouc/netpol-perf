@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: perf-1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: perf-1
+  template:
+    metadata:
+      labels:
+        app: perf-1
+        ports: multi
+    spec:
+      containers:
+        - name: multi
+          imagePullPolicy: Always
+          image: "kishorj/hello-multi:v1"
+          ports:
+            - name: http
+              containerPort: 80
