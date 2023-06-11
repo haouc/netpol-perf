@@ -9,18 +9,18 @@ set -o pipefail
 
 main() {
   util::echo_time "Cleaning up resources"
-  for i in `seq 1 ${NUM_NAMESPACES}`; do
+  for i in `seq ${START_IDX} ${NUM_NAMESPACES}`; do
     nsName=${NS_NAME_PREFIX}${i}
 
-    for j in `seq 1 ${POLICIES_PER_NS}`; do
-      policyName=para-hello-${i}
-      k8s::delete_policy $policyName $nsName
+    for j in `seq ${START_IDX} ${POLICIES_PER_NS}`; do
+      policyName=para-hello-${j}
+      k8s::delete_policy $policyName $nsName || true
     done
 
     deploymentName=hello-app-${i}
-    k8s::delete_deployment $deploymentName $nsName
+    k8s::delete_deployment $deploymentName $nsName || true
 
-    k8s::delete_namespace $nsName
+    k8s::delete_namespace $nsName || true
   done
 }
 

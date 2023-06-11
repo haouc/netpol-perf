@@ -8,10 +8,10 @@ set -o pipefail
 . ./k8s-utils.sh
 
 main() {
-  util::echo_time "Creating resources"
+  util::echo_time "Assigning pod IP addresses"
   for i in `seq ${START_IDX} ${NUM_NAMESPACES}`; do
     nsName=${NS_NAME_PREFIX}${i}
-    echo "Creating namespace $nsName"
+    util::echo_time "Creating namespace $nsName"
     k8s::create_namespace $nsName
 
     deploymentName=hello-app-${i}
