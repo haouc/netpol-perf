@@ -23,7 +23,7 @@ main() {
       for pod in $pods; do
         ip_address=$(python3 -c "import ipaddress; print(str(ipaddress.ip_address($current_address)))")
         util::echo_time "annotating pod $pod with ip address $ip_address"
-        kubectl annotate --overwrite -n $nsName pod $pod vpc.amazonaws.com/pod-ips=$ip_address
+        kubectl annotate --overwrite -n $nsName pod $pod vpc.amazonaws.com/pod-ips=$ip_address &
         current_address=$((current_address+1))
       done
     done

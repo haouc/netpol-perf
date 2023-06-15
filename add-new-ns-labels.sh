@@ -9,7 +9,10 @@ set -o pipefail
 
 main() {
   util::echo_time "Adding additional label to namespaces"
-  ns=$(kubectl get namespaces -ojsonpath)
+  namespaces=$(kubectl get namespaces -ojsonpath={.items..metadata.name})
+  for ns in $namespaces; do
+    kubectl label namespace $ns newlabel=value&
+  done
 }
 
 main $@
