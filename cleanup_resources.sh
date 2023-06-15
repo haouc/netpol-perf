@@ -12,13 +12,14 @@ main() {
   for i in `seq ${START_IDX} ${NUM_NAMESPACES}`; do
     nsName=${NS_NAME_PREFIX}${i}
 
-    for j in `seq ${START_IDX} ${POLICIES_PER_NS}`; do
-      policyName=para-hello-${j}
-      k8s::delete_policy $policyName $nsName || true
-    done
+    # Delete namespace, let the cascading delete handle the cleanup
+    #for j in `seq ${START_IDX} ${POLICIES_PER_NS}`; do
+    #  policyName=para-hello-${j}
+    #  k8s::delete_policy $policyName $nsName || true
+    #done
 
-    deploymentName=hello-app-${i}
-    k8s::delete_deployment $deploymentName $nsName || true
+    #deploymentName=hello-app-${i}
+    #k8s::delete_deployment $deploymentName $nsName || true
 
     k8s::delete_namespace $nsName || true
   done

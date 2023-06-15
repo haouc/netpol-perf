@@ -87,7 +87,31 @@ spec:
         ports: multi
         allow: ingress
         block: egress
+        label-key-106: label-value-106
+        label-key-107: label-value-107
+        label-key-108: label-value-108
+        label-key-109: label-value-109
+        label-key-11: label-value-11
+        label-key-110: label-value-110
+        label-key-111: label-value-111
+        label-key-112: label-value-112
+        label-key-113: label-value-113
+        label-key-114: label-value-114
+        label-key-115: label-value-115
+        label-key-116: label-value-116
+        label-key-117: label-value-117
+        label-key-118: label-value-118
+        label-key-119: label-value-119
+        label-key-12: label-value-12
+        label-key-120: label-value-120
+        label-key-121: label-value-121
+        label-key-122: label-value-122
+        label-key-123: label-value-123
+        label-key-124: label-value-124
+        label-key-125: label-value-125
     spec:
+      nodeSelector:
+        allow-multi-deploy: enabled
       containers:
         - name: multi
           imagePullPolicy: Always

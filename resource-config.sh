@@ -1,6 +1,6 @@
 export START_IDX=1
-export NUM_NAMESPACES=500
-export POLICIES_PER_NS=2
+export NUM_NAMESPACES=1000
+export POLICIES_PER_NS=3
 export NS_NAME_PREFIX="perfpol-ns-"
 export POLICY_NAME_PREFIX="access-"
 export DEPLOYMENT_NAME_PREFIX="tele-"

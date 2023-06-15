@@ -7,22 +7,25 @@ set -o pipefail
 . ./common-utils.sh
 . ./k8s-utils.sh
 
+# Use start IP address 10.10.16.1
+current_address=$((0x0a0a1001))
+
 main() {
   util::echo_time "Assigning pod IP addresses"
   for i in `seq ${START_IDX} ${NUM_NAMESPACES}`; do
     nsName=${NS_NAME_PREFIX}${i}
-    util::echo_time "Creating namespace $nsName"
-    k8s::create_namespace $nsName
+    echo "querying deployments in the namespace $nsName"
 
-    deploymentName=hello-app-${i}
-    k8s::create_deployment $deploymentName $REPLICAS_PER_DEPLOYMENT $nsName
-    if [ $WAIT_UNTIL_DEPLOYMENT_READY -eq 1 ]; then
-      k8s::wait_until_deployment_ready $deploymentName $nsName
-    fi
-
-    for j in `seq 1 ${POLICIES_PER_NS}`; do
-      policyName=para-hello-${j}
-      k8s::create_policy $policyName $nsName "app: $deploymentName"
+    deployments=$(kubectl get deploy -n $nsName -ojsonpath={.items..metadata.name})
+    for deployment in $deployments; do
+      util::echo_time "processing deployment $deployment"
+      pods=$(kubectl get pods -n $nsName -l app=$deployment -ojsonpath={.items..metadata.name})
+      for pod in $pods; do
+        ip_address=$(python3 -c "import ipaddress; print(str(ipaddress.ip_address($current_address)))")
+        util::echo_time "annotating pod $pod with ip address $ip_address"
+        kubectl annotate --overwrite -n $nsName pod $pod vpc.amazonaws.com/pod-ips=$ip_address
+        current_address=$((current_address+1))
+      done
     done
   done
 }
