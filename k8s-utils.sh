@@ -11,6 +11,7 @@ tgHealth=""
 k8s::create_policy() {
   policyName=""
   nsArg=""
+  nsName=""
   podSelector="app: hello"
   if [ ! -z $1 ]; then
     policyName=$1
@@ -20,6 +21,7 @@ k8s::create_policy() {
   fi
   if [ ! -z $2 ]; then
     nsArg="-n $2"
+    nsName=$2
   fi
   if [ ! -z "$3" ]; then
     podSelector=$3
@@ -53,9 +55,11 @@ spec:
     ports:
     - port: 443
       protocol: TCP
-    - port: 53
-      protocol: UDP
     - port: 80
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: $nsName
 EOF
 }
 
@@ -119,6 +123,8 @@ spec:
           ports:
             - name: http
               containerPort: 80
+            - name: https
+              containerPort: 443
 EOF
 }
 
