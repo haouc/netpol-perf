@@ -4,6 +4,7 @@ import datetime
 import ipaddress
 
 from kubernetes import client, config
+from typing import List
 
 START_IDX = 1
 NUM_NAMESPACES = 1000
@@ -16,7 +17,6 @@ WAIT_UNTIL_DEPLOYMENT_READY = 0
 
 class ResourceConfig:
     pass
-
 
 def label_namespaces():
     v1=client.CoreV1Api()
@@ -40,8 +40,7 @@ def label_namespaces():
         print("Labelled namespace", resp.metadata.name, task.successful())
 
 
-def create_policies():
-    netv1 = client.NetworkingV1Api()
+def create_policies(netv1: client.NetworkingV1Api):
     tasks = []
     for i in range(START_IDX, NUM_NAMESPACES+1):
         namespaceName = NS_NAME_PREFIX + str(i)
@@ -51,13 +50,88 @@ def create_policies():
             task = create_policy(netv1, policyName, namespaceName, {"app": deploymentName})
             tasks.append(task)
     # wait for tasks to complete
-    print("Waiting for policy create/ to be successful")
+    print("Waiting for policy create to complete")
     for task in tasks:
         ret = task.get()
         print("create policy name", ret.metadata.name, "namespace", ret.metadata.namespace, task.successful())
 
+def create_namespace(v1: client.CoreV1Api, name: str):
+    namespace = client.V1Namespace(
+        metadata=client.V1ObjectMeta(
+            name=name,
+            labels={
+                "aname": name,
+                "global": "select",
+            }
+        )
+    )
+    return v1.create_namespace(namespace, async_req=True)
 
-def create_policy(netv1: client.NetworkingV1Api, name: str, namespace: str, podSelector: map):
+def delete_namespace(v1: client.CoreV1Api, name: str):
+    return v1.delete_namespace(name, async_req=True)
+
+def create_deployment(appsv1: client.AppsV1Api, name: str, namespace: str, replicas: int):
+    def getEnvList(num : int) -> List[client.V1EnvVar]:
+        envList = []
+        for i in range(num):
+            envList.append(client.V1EnvVar(name="ENV_POD_GENERATE_KEY_INDEX_VALUE"+str(i), value="pod environment value " + str(i)))
+        return envList
+    
+    pod_labels={
+        'app':name,
+        'ports':'multi',
+        'allow':'ingress',
+        'block':'egress',
+    }
+    for i in range(22):
+        pod_labels['label_key_'+str(i)] = 'label-value-' + str(i)
+
+    deployment = client.V1Deployment(
+        metadata=client.V1ObjectMeta(
+            name=name,
+            namespace=namespace
+        ),
+        spec=client.V1DeploymentSpec(
+            strategy=client.V1DeploymentStrategy(
+                type="RollingUpdate",
+                rolling_update=client.V1RollingUpdateDeployment(
+                    max_surge='100%',
+                    max_unavailable='25%'
+                ),
+            ),
+            replicas=replicas,
+            selector=client.V1LabelSelector(match_labels={"app": name}),
+            template=client.V1PodTemplateSpec(
+                metadata=client.V1ObjectMeta(
+                    labels=pod_labels
+                ),
+                spec=client.V1PodSpec(
+                    node_selector={'allow-multi-deploy': 'enabled'},
+                    containers=[
+                        client.V1Container(
+                            env=getEnvList(10),
+                            name='multi',
+                            image='public.ecr.aws/kishorj/hello-multi:v1',
+                            ports=[
+                                client.V1ContainerPort(
+                                    name='http',
+                                    container_port=80
+                                ),
+                                client.V1ContainerPort(
+                                    name='https',
+                                    container_port=443
+                                )
+                            ]
+                        )
+                    ]
+                )
+            )
+        )
+    )
+    return appsv1.create_namespaced_deployment(namespace, deployment, async_req=True)
+
+
+def build_policy(name: str, namespace: str, podSelector: map):
     policy = client.V1NetworkPolicy(
         api_version="networking.k8s.io/v1",
         kind="NetworkPolicy",
@@ -92,25 +166,32 @@ def create_policy(netv1: client.NetworkingV1Api, name: str, namespace: str, podS
             )]
         )
     )
-    #return netv1.create_namespaced_network_policy(namespace, policy,  async_req=True)
+    return policy
+
+def create_policy(netv1: client.NetworkingV1Api, name, namespace: str, podSelector: map):
+    policy = build_policy(name, namespace, podSelector)
+    return netv1.create_namespaced_network_policy(namespace, policy,  async_req=True)
+
+
+def patch_policy(netv1: client.NetworkingV1Api, name: str, namespace: str, podSelector: map):
+    policy = build_policy(name, namespace, podSelector)
     return netv1.patch_namespaced_network_policy(name, namespace, policy,  async_req=True)
 
-def assign_pod_ips():
-    # Dump list of pods with currently assigned ips so don't duplicate
+
+def assign_pod_ips(v1: client.CoreV1Api):
     get_next_ip = ip_allocator()
-    v1 = client.CoreV1Api()
     used_ips = set()
+    # First, dump list of pods with currently assigned ips to prevent duplication
     pod_list = v1.list_pod_for_all_namespaces(watch=False)
-    pod: client.V1Pod
     update_pod_list = []
 
     for pod in pod_list.items:
         pod_metadata: client.V1ObjectMeta
-        pod_metadata = pod.metadata()
+        pod_metadata = pod.metadata
         try:
-            pod_ip=pod_metadata.annotations()["vpc.amazonaws.com/pod-ips"]
+            pod_ip=pod_metadata.annotations["vpc.amazonaws.com/pod-ips"]
             used_ips.add(pod_ip)
-        except ValueError:
+        except (KeyError, TypeError):
             if DEPLOYMENT_NAME_PREFIX in pod.metadata.name:
                 print("pod needs IP assignment", pod.metadata.name)
                 update_pod_list.append(pod)
@@ -145,12 +226,77 @@ def ip_allocator():
         return addr
     return allocator_fn
 
+def scale_deployment(appsv1: client.AppsV1Api, name: str, namespace: str, replicas: int):
+    body = {
+       "spec": {
+           "replicas": replicas
+        }
+    }
+    return appsv1.patch_namespaced_deployment_scale(name, namespace, body, async_req=True)
+
+def create_resources():
+    v1 = client.CoreV1Api()
+    netv1 = client.NetworkingV1Api()
+    appsv1=client.AppsV1Api()
+
+    tasks = []
+    for i in range(START_IDX, NUM_NAMESPACES+1):
+        namespaceName = NS_NAME_PREFIX + str(i)
+        print("Initiate create namespace", namespaceName)
+        task = create_namespace(v1, namespaceName)
+        tasks.append(('namespace', namespaceName, task))
+        
+        deploymentName = DEPLOYMENT_NAME_PREFIX + str(i)
+        print("Initiate create deployment", deploymentName)
+        task.append(('deployment', "{}/{}".format(namespaceName, deploymentName),
+            create_deployment(appsv1, deploymentName, namespaceName, REPLICAS_PER_DEPLOYMENT)))
+
+        for j in range(1, POLICIES_PER_NS+1):
+            policyName = POLICY_NAME_PREFIX + str(j)
+            task = create_policy(netv1, policyName, namespaceName, {"app": deploymentName})
+            tasks.append(('policy', "{}/{}".format(namespaceName, policyName), task))
+
+    # wait for tasks to complete
+    print("Waiting for create tasks to complete")
+    for resourceType, resourceName, task in tasks:
+        task.get()
+        print("create", resourceType, "id", resourceName, task.successful())
+
+    print("Assigining pod ips")
+    assign_pod_ips(v1)
+
+def delete_resources():
+    v1 = client.CoreV1Api()
+    tasks = []
+    for i in range(START_IDX, NUM_NAMESPACES+1):
+        namespaceName = NS_NAME_PREFIX + str(i)
+        print("Initiating namespace delete", namespaceName)
+        tasks.append((namespaceName, delete_namespace(v1, namespaceName)))
+    for ns, task in tasks:
+        task.get()
+        print('deleting namespace ', ns, 'status', task.successful())
+
+def scale_and_assign_ips(replicas: int):
+    v1 = client.CoreV1Api()
+    appsv1 = client.AppsV1Api()
+    tasks = []
+    for i in range(START_IDX, NUM_NAMESPACES+1):
+        namespaceName = NS_NAME_PREFIX + str(i)
+        deploymentName = DEPLOYMENT_NAME_PREFIX + str(i)
+        print("Initiating scale deployment", namespaceName, deploymentName, "replicas", replicas)
+        tasks.append(("{}/{}".format(namespaceName, deploymentName),
+            scale_deployment(appsv1, deploymentName, namespaceName, replicas)))
+    for id, task in tasks:
+        task.get()
+        print('scale deployment', id, 'status', task.successful())
+    print("Assigning IPs")
+    assign_pod_ips(v1)
+
 def main():
     print("Test start", datetime.datetime.now())
     config.load_kube_config()
-    #label_namespaces()
-    #create_policies()
-    assign_pod_ips()
+    # operation
+    scale_and_assign_ips(25)
     print("Test end", datetime.datetime.now())
 
 
