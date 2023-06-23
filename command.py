@@ -200,10 +200,13 @@ def assign_pod_ips(v1: client.CoreV1Api):
     print("Initiating IP assignment for", len(update_pod_list), "pods")
     tasks = []
     for pod in update_pod_list:
+        next_ip = get_next_ip()
+        while next_ip in used_ips:
+            next_ip = get_next_ip()
         body = {
             "metadata": {
                 "annotations": {
-                    "vpc.amazonaws.com/pod-ips": get_next_ip(),
+                    "vpc.amazonaws.com/pod-ips": next_ip,
                 }
             }
         }
@@ -248,7 +251,7 @@ def create_resources():
         
         deploymentName = DEPLOYMENT_NAME_PREFIX + str(i)
         print("Initiate create deployment", deploymentName)
-        task.append(('deployment', "{}/{}".format(namespaceName, deploymentName),
+        tasks.append(('deployment', "{}/{}".format(namespaceName, deploymentName),
             create_deployment(appsv1, deploymentName, namespaceName, REPLICAS_PER_DEPLOYMENT)))
 
         for j in range(1, POLICIES_PER_NS+1):
@@ -295,8 +298,17 @@ def scale_and_assign_ips(replicas: int):
 def main():
     print("Test start", datetime.datetime.now())
     config.load_kube_config()
-    # operation
-    scale_and_assign_ips(25)
+    # operations
+    # Create resources
+    create_resources()
+
+    # Scale and assign IPs
+    #scale_and_assign_ips(25)
+    #v1 = client.CoreV1Api()
+    #assign_pod_ips(v1)
+
+    # Delete resources
+    # delete_resources()
     print("Test end", datetime.datetime.now())
 
 
