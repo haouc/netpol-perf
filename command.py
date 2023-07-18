@@ -2,6 +2,7 @@
 
 import datetime
 import ipaddress
+import time
 
 from kubernetes import client, config
 from typing import List
@@ -12,7 +13,7 @@ POLICIES_PER_NS = 3
 NS_NAME_PREFIX = "perfpol-ns-"
 POLICY_NAME_PREFIX = "para-hello-"
 DEPLOYMENT_NAME_PREFIX = "hello-app-"
-REPLICAS_PER_DEPLOYMENT = 10
+REPLICAS_PER_DEPLOYMENT = 25
 WAIT_UNTIL_DEPLOYMENT_READY = 0
 
 class ResourceConfig:
@@ -76,7 +77,7 @@ def create_deployment(appsv1: client.AppsV1Api, name: str, namespace: str, repli
         for i in range(num):
             envList.append(client.V1EnvVar(name="ENV_POD_GENERATE_KEY_INDEX_VALUE"+str(i), value="pod environment value " + str(i)))
         return envList
-    
+
     pod_labels={
         'app':name,
         'ports':'multi',
@@ -181,11 +182,20 @@ def patch_policy(netv1: client.NetworkingV1Api, name: str, namespace: str, podSe
 def assign_pod_ips(v1: client.CoreV1Api):
     get_next_ip = ip_allocator()
     used_ips = set()
-    # First, dump list of pods with currently assigned ips to prevent duplication
-    pod_list = v1.list_pod_for_all_namespaces(watch=False)
     update_pod_list = []
+    # First, dump list of pods with currently assigned ips to prevent duplication
+    # Use pagination to list all pods
+    continue_token = None
+    pods = []
+    while True:
+        pod_list_response = v1.list_pod_for_all_namespaces(watch=False, limit=2500, _continue=continue_token)
+        pods.extend(pod_list_response.items)
+        print("Got ", len(pod_list_response.items), "pods for the pod list")
+        continue_token = pod_list_response.metadata._continue
+        if not continue_token:
+            break
 
-    for pod in pod_list.items:
+    for pod in pods:
         pod_metadata: client.V1ObjectMeta
         pod_metadata = pod.metadata
         try:
@@ -210,11 +220,19 @@ def assign_pod_ips(v1: client.CoreV1Api):
                 }
             }
         }
-        tasks.append(v1.patch_namespaced_pod(pod.metadata.name, pod.metadata.namespace, body, async_req=True))
+        try:
+            tasks.append(v1.patch_namespaced_pod(pod.metadata.name, pod.metadata.namespace, body, async_req=True))
+        except Exception as e:
+            print("unable to initiate pod patch", e)
+            time.sleep(2)
 
     for task in tasks:
-        ret = task.get()
-        print("patched pod", ret.metadata.name, ret.metadata.namespace, task.successful())
+        try:
+            ret = task.get()
+            print("patched pod", ret.metadata.name, ret.metadata.namespace, task.successful())
+        except Exception as e:
+            print("Unable to get ip assignment status", e)
+            time.sleep(2)
 
     print("Completed IP assignment for pods", len(update_pod_list), "pods")
 
@@ -246,27 +264,42 @@ def create_resources():
     for i in range(START_IDX, NUM_NAMESPACES+1):
         namespaceName = NS_NAME_PREFIX + str(i)
         print("Initiate create namespace", namespaceName)
-        task = create_namespace(v1, namespaceName)
-        tasks.append(('namespace', namespaceName, task))
-        
-        deploymentName = DEPLOYMENT_NAME_PREFIX + str(i)
-        print("Initiate create deployment", deploymentName)
-        tasks.append(('deployment', "{}/{}".format(namespaceName, deploymentName),
-            create_deployment(appsv1, deploymentName, namespaceName, REPLICAS_PER_DEPLOYMENT)))
+        try:
+            task = create_namespace(v1, namespaceName)
+            tasks.append(('namespace', namespaceName, task))
+        except Exception as e:
+            print("Unable to initiate create namespace", e)
+            time.sleep(2)
+
+        try:
+            deploymentName = DEPLOYMENT_NAME_PREFIX + str(i)
+            print("Initiate create deployment", deploymentName)
+            tasks.append(('deployment', "{}/{}".format(namespaceName, deploymentName),
+                create_deployment(appsv1, deploymentName, namespaceName, REPLICAS_PER_DEPLOYMENT)))
+        except Exception as e:
+            print("Unable to initiate create deployment, sleeping 2s", e)
+            time.sleep(2)
 
         for j in range(1, POLICIES_PER_NS+1):
-            policyName = POLICY_NAME_PREFIX + str(j)
-            task = create_policy(netv1, policyName, namespaceName, {"app": deploymentName})
-            tasks.append(('policy', "{}/{}".format(namespaceName, policyName), task))
+            try:
+                policyName = POLICY_NAME_PREFIX + str(j)
+                task = create_policy(netv1, policyName, namespaceName, {"app": deploymentName})
+                tasks.append(('policy', "{}/{}".format(namespaceName, policyName), task))
+            except Exception as e:
+                print("Unable to initiate create policy", e)
+                time.sleep(2)
 
     # wait for tasks to complete
     print("Waiting for create tasks to complete")
     for resourceType, resourceName, task in tasks:
-        task.get()
-        print("create", resourceType, "id", resourceName, task.successful())
+        try:
+            task.get()
+            print("create", resourceType, "id", resourceName, task.successful())
+        except Exception as e:
+            print("Failed to wait for create to complete", e)
 
     print("Assigining pod ips")
-    assign_pod_ips(v1)
+    #assign_pod_ips(v1)
 
 def delete_resources():
     v1 = client.CoreV1Api()
@@ -279,7 +312,7 @@ def delete_resources():
         task.get()
         print('deleting namespace ', ns, 'status', task.successful())
 
-def scale_and_assign_ips(replicas: int):
+def scale_and_assign_ips(v1: client.CoreV1Api, replicas: int):
     v1 = client.CoreV1Api()
     appsv1 = client.AppsV1Api()
     tasks = []
@@ -287,25 +320,31 @@ def scale_and_assign_ips(replicas: int):
         namespaceName = NS_NAME_PREFIX + str(i)
         deploymentName = DEPLOYMENT_NAME_PREFIX + str(i)
         print("Initiating scale deployment", namespaceName, deploymentName, "replicas", replicas)
-        tasks.append(("{}/{}".format(namespaceName, deploymentName),
-            scale_deployment(appsv1, deploymentName, namespaceName, replicas)))
+        try:
+            tasks.append(("{}/{}".format(namespaceName, deploymentName),
+                scale_deployment(appsv1, deploymentName, namespaceName, replicas)))
+        except Exception as e:
+            print("Failed to initate deployment scale", e)
     for id, task in tasks:
-        task.get()
-        print('scale deployment', id, 'status', task.successful())
-    print("Assigning IPs")
-    assign_pod_ips(v1)
+        try:
+            task.get()
+            print('scale deployment', id, 'status', task.successful())
+        except Exception as e:
+            print("Failed to wait for deployment to be successful", e)
+    #print("Assigning IPs")
+    #assign_pod_ips(v1)
 
 def main():
     print("Test start", datetime.datetime.now())
     config.load_kube_config()
     # operations
     # Create resources
-    create_resources()
+    # create_resources()
 
     # Scale and assign IPs
-    #scale_and_assign_ips(25)
-    #v1 = client.CoreV1Api()
-    #assign_pod_ips(v1)
+    v1 = client.CoreV1Api()
+    #scale_and_assign_ips(v1, 25)
+    assign_pod_ips(v1)
 
     # Delete resources
     # delete_resources()
