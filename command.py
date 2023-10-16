@@ -1,15 +1,17 @@
-#!/usr/local/bin/python3
+#!/usr/bin/python3
 
 import datetime
 import ipaddress
+import sys
 import time
+import uuid
 
 from kubernetes import client, config
 from typing import List
 
-START_IDX = 1
-NUM_NAMESPACES = 1000
-POLICIES_PER_NS = 3
+# start_idx = 1
+# num_ns = 1000
+# policies_per_ns = 3
 NS_NAME_PREFIX = "perfpol-ns-"
 POLICY_NAME_PREFIX = "para-hello-"
 DEPLOYMENT_NAME_PREFIX = "hello-app-"
@@ -18,6 +20,8 @@ WAIT_UNTIL_DEPLOYMENT_READY = 0
 
 class ResourceConfig:
     pass
+
+namespaces = []
 
 def label_namespaces():
     v1=client.CoreV1Api()
@@ -41,13 +45,14 @@ def label_namespaces():
         print("Labelled namespace", resp.metadata.name, task.successful())
 
 
-def create_policies(netv1: client.NetworkingV1Api):
+def create_policies(netv1: client.NetworkingV1Api, start_idx, num_ns, policies_per_ns):
     tasks = []
-    for i in range(START_IDX, NUM_NAMESPACES+1):
-        namespaceName = NS_NAME_PREFIX + str(i)
+    # for i in range(start_idx, num_ns+start_idx):
+    #     namespaceName = NS_NAME_PREFIX + str(i)
+    for i, namespaceName in enumerate(namespaces):
         deploymentName = DEPLOYMENT_NAME_PREFIX + str(i)
-        for j in range(1, POLICIES_PER_NS+1):
-            policyName = POLICY_NAME_PREFIX + str(j)
+        for j in range(1, policies_per_ns+1):
+            policyName = POLICY_NAME_PREFIX + str(uuid.uuid4())
             task = create_policy(netv1, policyName, namespaceName, {"app": deploymentName})
             tasks.append(task)
     # wait for tasks to complete
@@ -66,10 +71,16 @@ def create_namespace(v1: client.CoreV1Api, name: str):
             }
         )
     )
-    return v1.create_namespace(namespace, async_req=True)
+    try:
+        return v1.create_namespace(namespace, async_req=True)
+    except Exception as e:
+        print(f"create namespace failed with error: {e}")
 
 def delete_namespace(v1: client.CoreV1Api, name: str):
-    return v1.delete_namespace(name, async_req=True)
+    try:
+        return v1.delete_namespace(name, async_req=True)
+    except Exception as e:
+        print(f"delete namespace failed with error: {e}")
 
 def create_deployment(appsv1: client.AppsV1Api, name: str, namespace: str, replicas: int):
     def getEnvList(num : int) -> List[client.V1EnvVar]:
@@ -255,18 +266,19 @@ def scale_deployment(appsv1: client.AppsV1Api, name: str, namespace: str, replic
     }
     return appsv1.patch_namespaced_deployment_scale(name, namespace, body, async_req=True)
 
-def create_resources():
+def create_resources(start_idx, num_ns, policies_per_ns):
     v1 = client.CoreV1Api()
     netv1 = client.NetworkingV1Api()
     appsv1=client.AppsV1Api()
 
     tasks = []
-    for i in range(START_IDX, NUM_NAMESPACES+1):
-        namespaceName = NS_NAME_PREFIX + str(i)
+    for i in range(start_idx, num_ns+start_idx):
+        namespaceName = NS_NAME_PREFIX + str(uuid.uuid4())
         print("Initiate create namespace", namespaceName)
         try:
             task = create_namespace(v1, namespaceName)
             tasks.append(('namespace', namespaceName, task))
+            namespaces.append(namespaceName)
         except Exception as e:
             print("Unable to initiate create namespace", e)
             time.sleep(2)
@@ -280,9 +292,9 @@ def create_resources():
             print("Unable to initiate create deployment, sleeping 2s", e)
             time.sleep(2)
 
-        for j in range(1, POLICIES_PER_NS+1):
+        for j in range(1, policies_per_ns+1):
             try:
-                policyName = POLICY_NAME_PREFIX + str(j)
+                policyName = POLICY_NAME_PREFIX + str(uuid.uuid4())
                 task = create_policy(netv1, policyName, namespaceName, {"app": deploymentName})
                 tasks.append(('policy', "{}/{}".format(namespaceName, policyName), task))
             except Exception as e:
@@ -301,23 +313,28 @@ def create_resources():
     print("Assigining pod ips")
     #assign_pod_ips(v1)
 
-def delete_resources():
+def delete_resources(start_idx, num_ns):
     v1 = client.CoreV1Api()
     tasks = []
-    for i in range(START_IDX, NUM_NAMESPACES+1):
-        namespaceName = NS_NAME_PREFIX + str(i)
+    # for i in range(start_idx, num_ns+start_idx):
+    #     namespaceName = NS_NAME_PREFIX + str(i)
+    for _, namespaceName in enumerate(namespaces):
         print("Initiating namespace delete", namespaceName)
         tasks.append((namespaceName, delete_namespace(v1, namespaceName)))
     for ns, task in tasks:
-        task.get()
+        try: 
+            task.get()
+        except:
+            pass
         print('deleting namespace ', ns, 'status', task.successful())
 
-def scale_and_assign_ips(v1: client.CoreV1Api, replicas: int):
+def scale_and_assign_ips(v1: client.CoreV1Api, replicas: int, start_idx, num_ns: int):
     v1 = client.CoreV1Api()
     appsv1 = client.AppsV1Api()
     tasks = []
-    for i in range(START_IDX, NUM_NAMESPACES+1):
-        namespaceName = NS_NAME_PREFIX + str(i)
+    # for i in range(start_idx, num_ns+start_idx):
+    for i, namespaceName in enumerate(namespaces):
+        # namespaceName = NS_NAME_PREFIX + str(i)
         deploymentName = DEPLOYMENT_NAME_PREFIX + str(i)
         print("Initiating scale deployment", namespaceName, deploymentName, "replicas", replicas)
         try:
@@ -336,18 +353,26 @@ def scale_and_assign_ips(v1: client.CoreV1Api, replicas: int):
 
 def main():
     print("Test start", datetime.datetime.now())
+    start_idx = 1
+    num_ns = 1000
+    policies_per_ns = 5
+    if len(sys.argv[1:]) >= 2: 
+        start_idx = int(sys.argv[1])
+        num_ns = int(sys.argv[2])
+        policies_per_ns = int(sys.argv[3])
     config.load_kube_config()
+    print(f'Using counter start {start_idx} and end {num_ns}')
     # operations
     # Create resources
-    # create_resources()
+    create_resources(start_idx, num_ns, policies_per_ns)
 
     # Scale and assign IPs
     v1 = client.CoreV1Api()
-    #scale_and_assign_ips(v1, 25)
-    assign_pod_ips(v1)
+    scale_and_assign_ips(v1, 25, start_idx, num_ns)
+    # assign_pod_ips(v1)
 
     # Delete resources
-    # delete_resources()
+    delete_resources(start_idx, num_ns)
     print("Test end", datetime.datetime.now())
 
 
